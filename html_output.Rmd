@@ -1,0 +1,162 @@
+---
+title: "Machine Learning Course Project"
+author: "mrohde"
+date: "23. September 2015"
+output: html_document
+---
+
+1. Management Summary
+2. Data Summary
+3. Programming
+4. Prediction
+5. Final Test Set Validation
+
+# 1. Management Summary
+
+This Paper tries to predict/recognise the manner of excercises done by specific test subjects, whom performed similar exercises with a dumbbell (Further informaton see 2.). Therefore the train dataset will be separeted into a real training dataset and an additional test dataset (Ratio 0.8/0.2). Afterwards two algorithms will be applied on the trainings dataset and will be cross validated with the test dataset. It is shown that the random forest algorithm will predict ~ 99% of the exercises in our testset in to the correct manner. Meanwhile the rpart algorithm only predicts less then 50% of our testdata correct. The expected out of sample error for the random forest is 0.0036 (due to performance reasons different cross validation methods for the random forest algorithm will be omitted).  
+
+
+# 2. Data Summary
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Read more: http://groupware.les.inf.puc-rio.br/har#dataset#ixzz3maME0yt5
+
+
+## Expectations for the prediction:
+
+- all done correct (A): no elbow movement, no hip movement
+- throwing elbow to the front (B): dumbbell movement in z and arm movement in z
+- lifting dumbbell only halfways (C): less movement in y for dumbbell, arm also lower than in D
+- lowering the dumbbell only halfways (D): less movement in y for dumbbell than a, y in general is is higher than in C for arms and dumbell. Maybe more gyroscopig movement due to the difficult increasment
+- Throwing the hips to the front (E): high movement in the beltsensor.
+
+## Picture of the measurements
+![](on-body-sensing-schema.png)
+
+# 3. Programming
+
+## loading packages
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+library(RCurl)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(rattle)
+library(doParallel)
+registerDoParallel(detectCores()-1)
+```
+
+
+## Getting Data
+```{r}
+destination <- getURL("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+train <- read.csv(text = destination)
+
+destination <- getURL("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+test_final <- read.csv(text = destination)
+
+```
+
+## Splitting training set into test and traning set
+```{r}
+
+set.seed(123)
+intrain <- createDataPartition(train$classe, p = 0.8, list = FALSE)
+
+training <- train[intrain,]
+testing <- train[-intrain,]
+
+```
+
+
+## Column Selection
+
+Since we want to predict the manner of the excercise based on the movement of different sensors. Therefore the prediction takes all the x,y and z values of the 4 different sensors, as well as the prediction value classe.
+```{r}
+training <- training[,c(8,9,10,11,37,38,39,40,41,42,43,44,45,46,47,48,49,60,61,62,63,64,65,
+                66,67,68,84,85,86,102,113,114,115,116,117,118,119,
+                120,121,122,123,124,140,151,152,153,154,155,156,157,158,159,160)]
+
+testing <- testing[,c(8,9,10,11,37,38,39,40,41,42,43,44,45,46,47,48,49,60,61,62,63,64,65,66,
+                67,68,84,85,86,102,113,114,115,116,117,118,119,
+                120,121,122,123,124,140,151,152,153,154,155,156,157,158,159,160)]
+
+test_final <- test_final[,c(8,9,10,11,37,38,39,40,41,42,43,44,45,46,47,48,49,60,61,62,63,64,
+                65,66,67,68,
+                84,85,86,102,113,114,115,116,117,118,119,
+                120,121,122,123,124,140,151,152,153,154,155,156,157,158,159,160)]
+
+
+names(training)
+```
+
+
+# 4. Prediction 
+
+## Correlation-Check.
+```{r}
+M <- abs(cor(training[,-53]))
+diag(M) <- 0
+which(M > 0.8, arr.ind = T)
+```
+
+As seen in the output above our test dataset consist out of many correlated variables. 
+Therefore we should use the Principal component approach (PCA) to preprocess correlated variables to one aggregated variable. This will maintain most of accuracy, but will reduce the components. 
+
+## model rpart 
+```{r, messages = FALSE}
+mod_rpart <- train(classe ~ .,data = training, method = "rpart", preProcess = "pca")
+
+predictions <- predict(mod_rpart, testing[,-53])
+fancyRpartPlot(mod_rpart$finalModel)
+
+confusionMatrix(predictions, testing$classe)
+```
+
+Based on the Confusion Matrix we only achive an accuracy of 0.4043 (without preprocessing of PCA:0.4943 (not shown here)) which is not acceptable as a prediction for future datasets. Because of that we switch to a more sophisticated method which is called random forest. The expected out of sample error will be too high for a decent prediction. (estimated error rate = 1- 0.4943 = 0.5057)
+
+
+## model random forest
+
+Random Forest is also a method to predict future outcomes. It is building multiple decision trees and aggregates them (Forest).
+
+Random forest can be very time consuming due to its calculation time.
+Therefore we adjust some setting in the tgrid and trainControl command order to increase the performance of our calculation. (This is taken from the Forum of the Coursera machine learning Course by the John Hopkins University. Thanks to Ray Jones for posting the information!) 
+https://class.coursera.org/predmachlearn-032/forum/thread?thread_id=50#comment-98
+```{r, messages = FALSE}
+
+
+fitControl    <- trainControl(method = "none")
+tgrid           <- expand.grid(mtry=c(6)) 
+model  <- train(classe ~ ., 
+                data = training, 
+                method = "rf", 
+                trControl = fitControl, 
+                tuneGrid = tgrid,
+                preProcess = "pca")
+
+pred_forest <- predict(model, testing[,-53])
+
+confusionMatrix(pred_forest, testing$classe)
+```
+
+Since we change the trainingControl method to "none" to increase the overall performance we can not look at the dentogram of the final decision tree. Nevertheless we get an accuracy of 0.9794 (without PCA: 0.9954) for our prediction on our testing set. When looking at the confusion matrix we can see, that 78 (without PCA only: 18) out of 15699 observation have gotten a false classification. The expected out of sample error will be very low for this algorithm (1-0.9954 = 0.0036).
+
+Because of the Accuracy loses due to the PCA, the final model will be without this approach. 
+
+# 5. Final Test Set validation
+
+```{r}
+model_final  <- train(classe ~ ., 
+                data = training, 
+                method = "rf", 
+                trControl = fitControl, 
+                tuneGrid = tgrid)
+
+
+
+predict(model_final$finalModel, newdata = test_final[-53])
+
+```
+
+
